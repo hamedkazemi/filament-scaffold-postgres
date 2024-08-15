@@ -181,8 +181,33 @@ class ScaffoldResource extends Resource
                                 Forms\Components\Textarea::make('comment')
                                     ->autosize()
                                     ->default(fn ($record) => $record['comment'] ?? ''),
+                                Forms\Components\Repeater::make('foreign_keys')
+                                    ->label('Foreign Keys')
+                                    ->schema([
+                                        Forms\Components\Select::make('foreign_table')
+                                            ->label('Foreign Table')
+                                            ->options(self::getAllTableNames())
+                                            ->reactive()
+                                            ->afterStateUpdated(function (Set $set, $state) {
+                                                $allTables = self::getAllTableNames();
+                                                if ($allTables[$state]) {
+                                                    $tableColumns = self::getTableColumns($allTables[$state]);
+                                                    $columnNames = array_column($tableColumns, 'name', 'name');
+                                                    $set('foreign_key_options', $columnNames);
+                                                } else {
+                                                    $set('foreign_key_options', []);
+                                                }
+                                            }),
+                                        Forms\Components\Select::make('foreign_key')
+                                            ->label('Foreign Key')
+                                            ->options(function (callable $get) {
+                                                return $get('foreign_key_options') ?? [];
+                                            })
+                                            ->reactive(),
+                                    ])
+                                    ->columns(1),
                             ])
-                            ->columns(7),
+                            ->columns(1),
                     ])
                     ->columnSpan('full'),
 
@@ -206,43 +231,105 @@ class ScaffoldResource extends Resource
             ->columns(3);
     }
 
+
     public static function getAllTableNames(): array
     {
-        $tables = DB::select('SHOW TABLES');
+        $tables = DB::select("SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_type = 'BASE TABLE'");
 
         return array_map('current', $tables);
     }
 
     public static function getTableColumns($tableName)
     {
-        $columns = DB::select('SHOW COLUMNS FROM ' . $tableName);
+        $columns = DB::select("SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = '{$tableName}' AND table_schema = 'public';");
+
         $columnDetails = [];
 
         $typeMapping = [
+            'character varying' => 'string',
             'varchar' => 'string',
-            'int' => 'integer',
-            'bigint' => 'bigInteger',
-            'text' => 'text',
-            'float' => 'float',
-            'double' => 'double',
-            'decimal' => 'decimal',
-            'bool' => 'boolean',
-            'date' => 'date',
-            'time' => 'time',
-            'datetime' => 'dateTime',
-            'timestamp' => 'timestamp',
+            'character' => 'char',
             'char' => 'char',
-            'mediumtext' => 'mediumText',
-            'longtext' => 'longText',
-            'tinyint' => 'tinyInteger',
+            'text' => 'text',
+            'citext' => 'text',
+            'name' => 'string',
+
+            'integer' => 'integer',
+            'int' => 'integer',
+            'int4' => 'integer',
             'smallint' => 'smallInteger',
-            'mediumint' => 'mediumInteger',
+            'int2' => 'smallInteger',
+            'bigint' => 'bigInteger',
+            'int8' => 'bigInteger',
+            'serial' => 'integer', // typically auto-incrementing
+            'serial4' => 'integer',
+            'smallserial' => 'smallInteger',
+            'serial2' => 'smallInteger',
+            'bigserial' => 'bigInteger',
+            'serial8' => 'bigInteger',
+
+            'numeric' => 'decimal',
+            'decimal' => 'decimal',
+            'real' => 'float',
+            'float4' => 'float',
+            'double precision' => 'double',
+            'float8' => 'double',
+            'money' => 'decimal',
+
+            'boolean' => 'boolean',
+            'bool' => 'boolean',
+
+            'date' => 'date',
+            'time without time zone' => 'time',
+            'time with time zone' => 'timeTz',
+            'timetz' => 'timeTz',
+            'timestamp without time zone' => 'timestamp',
+            'timestamp with time zone' => 'timestampTz',
+            'timestamptz' => 'timestampTz',
+            'interval' => 'interval',
+
             'json' => 'json',
             'jsonb' => 'jsonb',
-            'binary' => 'binary',
+
+            'bytea' => 'binary',
+            'blob' => 'binary',
+            'byte' => 'binary',
+
+            'uuid' => 'uuid',
+
+            'array' => 'array', // PostgreSQL supports array types
+            'bit' => 'bit',
+            'varbit' => 'bit varying',
+
+            'cidr' => 'cidr',
+            'inet' => 'inet',
+            'macaddr' => 'macAddress',
+            'macaddr8' => 'macAddress',
+
+            'tsvector' => 'tsvector',
+            'tsquery' => 'tsquery',
+
+            'xml' => 'xml',
+
+            'box' => 'geometry',
+            'circle' => 'geometry',
+            'line' => 'geometry',
+            'lseg' => 'geometry',
+            'path' => 'geometry',
+            'point' => 'geometry',
+            'polygon' => 'geometry',
+
+            'geometry' => 'geometry', // PostGIS extension
+            'geography' => 'geography', // PostGIS extension
+            'hstore' => 'hstore',
+
             'enum' => 'enum',
-            'ipaddress' => 'ipAddress',
-            'macaddress' => 'macAddress',
+            'range' => 'range',
+
+            // Custom mappings as needed
         ];
 
         $keyMapping = [
@@ -252,24 +339,30 @@ class ScaffoldResource extends Resource
         ];
 
         foreach ($columns as $column) {
-            if ($column->Field === 'id' || $column->Field === 'ID' || $column->Field === 'created_at' || $column->Field === 'updated_at' || $column->Field === 'deleted_at') {
+            // Use column_name instead of Field to refer to the column name
+            if ($column->column_name === 'id' ||
+                $column->column_name === 'ID' ||
+                $column->column_name === 'created_at' ||
+                $column->column_name === 'updated_at' ||
+                $column->column_name === 'deleted_at') {
                 continue;
             }
 
-            $type = preg_replace('/\(.+\)/', '', $column->Type);
+            $type = preg_replace('/\(.+\)/', '', $column->data_type);
             $type = preg_split('/\s+/', $type)[0];
 
-            $key = $column->Key;
+            // PostgreSQL doesn't have a direct Key property like MySQL, so you might need to handle keys differently or skip this part
+            $key = ''; // Adjust this part depending on how you determine keys in your PostgreSQL schema
 
             $translatedType = $typeMapping[$type] ?? $type;
             $translatedKey = $keyMapping[$key] ?? $key;
 
             $columnDetails[] = [
-                'name' => $column->Field,
+                'name' => $column->column_name,
                 'type' => $translatedType,
-                'nullable' => $column->Null === 'YES',
+                'nullable' => $column->is_nullable === 'YES',
                 'key' => $translatedKey,
-                'default' => $column->Default,
+                'default' => $column->column_default,
                 'comment' => '',
             ];
         }
@@ -605,28 +698,30 @@ class ScaffoldResource extends Resource
 
             $upPart = self::generateUp($data);
             $upFunction = <<<EOD
-                public function up(): void
-                    {
-                        Schema::create('{$data['Table Name']}', function (Blueprint \$table) {
-                            \$table->id();
-                            $upPart;
-                    }
-                EOD;
+            public function up(): void
+                {
+                    Schema::create('{$data['Table Name']}', function (Blueprint \$table) {
+                        \$table->id();
+                        $upPart;
+                        \$table->timestamps();
+                        if ({$data['Soft Delete']}) {
+                            \$table->softDeletes();
+                        }
+                    });
+                }
+            EOD;
 
             $downFunction = <<<EOD
-                public function down()
-                    {
-                        Schema::dropIfExists('{$data['Table Name']}');
-                    }
-                EOD;
+            public function down(): void
+                {
+                    Schema::dropIfExists('{$data['Table Name']}');
+                }
+            EOD;
 
             $content = preg_replace('/public function up.*?{.*?}/s', $upFunction, $content);
             $content = preg_replace('/public function down.*?{.*?}/s', $downFunction, $content);
 
             file_put_contents($filePath, $content);
-        }
-        if ($data['Run Migrate'] == true) {
-            Artisan::call('migrate');
         }
     }
 
@@ -637,38 +732,35 @@ class ScaffoldResource extends Resource
             $data['Table']
         );
 
-        if ($data['Created_at & Updated_at'] == true) {
-            $fields[] = '$table->timestamps()';
-        }
-
-        if ($data['Soft Delete'] == true) {
-            $fields[] = '$table->softDeletes()';
+        // Append the foreign keys if any
+        foreach ($data['Table'] as $column) {
+            if (!empty($column['foreign_table']) && !empty($column['foreign_key'])) {
+                $fields[] = "\$table->foreignId('{$column['name']}')->constrained('{$column['foreign_table']}')->onDelete('cascade');";
+            }
         }
 
         return implode(";\n", $fields);
     }
 
+
     private static function generateColumnDefinition(array $column): string
     {
         $definition = "\$table->{$column['type']}('{$column['name']}')";
 
-        $methods = [
-            'nullable' => fn (): bool => $column['nullable'] ?? false,
-            'default' => fn (): ?string => $column['default'] ?? null,
-            'comment' => fn (): ?string => $column['comment'] ?? null,
-            'key' => fn (): ?string => $column['key'] ?? null,
-        ];
+        if ($column['nullable']) {
+            $definition .= "->nullable()";
+        }
 
-        foreach ($methods as $method => $condition) {
-            $value = $condition();
-            if ($value !== null && $value !== false) {
-                $definition .= match ($method) {
-                    'nullable' => '->nullable()',
-                    'default' => "->default('{$value}')",
-                    'comment' => "->comment('{$value}')",
-                    'key' => "->{$value}()",
-                };
-            }
+        if ($column['default'] !== null) {
+            $definition .= "->default('{$column['default']}')";
+        }
+
+        if (!empty($column['key']) && $column['key'] !== 'NULL') {
+            $definition .= "->{$column['key']}()";
+        }
+
+        if (!empty($column['comment'])) {
+            $definition .= "->comment('{$column['comment']}')";
         }
 
         return $definition;
@@ -676,27 +768,27 @@ class ScaffoldResource extends Resource
 
     public static function overwriteModelFile($filePath, $data)
     {
-        $column = self::getColumn($data);
+        $columnNames = self::getColumn($data);
 
         if (file_exists($filePath)) {
             $content = file_get_contents($filePath);
             $useSoftDel = <<<EOD
-                use Illuminate\Database\Eloquent\Model;
-                use Illuminate\Database\Eloquent\SoftDeletes;
-                EOD;
+            use Illuminate\Database\Eloquent\Model;
+            use Illuminate\Database\Eloquent\SoftDeletes;
+            EOD;
 
             $chooseTable = <<<EOD
-                use HasFactory;
-                    protected \$table = '{$data['Table Name']}';
-                    protected \$fillable = $column;
-                EOD;
+            use HasFactory;
+                protected \$table = '{$data['Table Name']}';
+                protected \$fillable = $columnNames;
+            EOD;
 
             $withSoftdel = <<<EOD
-                use HasFactory;
-                    use SoftDeletes;
-                    protected \$table = '{$data['Table Name']}';
-                    protected \$fillable = $column;
-                EOD;
+            use HasFactory;
+                use SoftDeletes;
+                protected \$table = '{$data['Table Name']}';
+                protected \$fillable = $columnNames;
+            EOD;
 
             if ($data['Soft Delete'] == true) {
                 $content = preg_replace('/use Illuminate\\\\Database\\\\Eloquent\\\\Model;/s', $useSoftDel, $content);
@@ -704,9 +796,34 @@ class ScaffoldResource extends Resource
             } else {
                 $content = preg_replace('/use HasFactory;/s', $chooseTable, $content);
             }
+
+            // Add relationships
+            $relationships = self::generateRelationships($data);
+            $content = preg_replace('/class\s+[^\s]+\s+extends\s+Model\s*{/', "class " . self::getFileName($data['Model']) . " extends Model {\n\n$relationships", $content);
+
             file_put_contents($filePath, $content);
         }
     }
+
+    private static function generateRelationships(array $data): string
+    {
+        $relationships = [];
+
+        foreach ($data['Table'] as $column) {
+            if (!empty($column['foreign_table']) && !empty($column['foreign_key'])) {
+                $relatedModel = ucfirst(Str::camel(Str::singular($column['foreign_table'])));
+                $relationships[] = <<<EOD
+                public function {$relatedModel}()
+                {
+                    return \$this->belongsTo({$relatedModel}::class);
+                }
+            EOD;
+            }
+        }
+
+        return implode("\n\n", $relationships);
+    }
+
 
     public static function getColumn($data)
     {
